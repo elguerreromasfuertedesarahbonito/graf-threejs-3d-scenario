@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Control de Personaje 3D con Three.js</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0" />
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            background-color: rgba(0,0,0,0.5);
+            padding: 5px;
+            z-index: 100;
+            display:block;
+        }
+        #footer {
+            position: fixed;
+            bottom: 0;
+            width: 100%;
+            background-color: rgba(160, 160, 160, 0.8);
+            color: #222;
+            font-weight: bold;
+            font-size: 1.2em;
+            text-align: center;
+            padding: 10px 0;
+            font-family: Arial, sans-serif;
+        }
+        h1 {
+            font-weight: bold;
+            color: #444;
+            margin: 0 0 10px 0;
+        }
+        #controls {
+            margin-top: 5px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="info">
+        <a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> - Control de Personaje 3D
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.132.2/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.132.2/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import Stats from 'three/addons/libs/stats.module.js';
+        import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+        import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // Variables principales
+        let camera, scene, renderer, stats, mixer, clock, controls;
+        let character, characterContainer, actions = {}, activeAction;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false, running = false;
+        let canJump = false;
+        let velocity = new THREE.Vector3();
+        let direction = new THREE.Vector3();
+        let objects = [];
+        
+        // Configuraciones de movimiento
+        const walkSpeed = 2.5;
+        const runSpeed = 5.0;
+        const gravity = 30;
+        const jumpSpeed = 15;
+        const dampingFactor = 0.15;
+
+        // Configuración de cámara
+        let cameraTargetPosition = new THREE.Vector3();
+        let cameraCurrentPosition = new THREE.Vector3();
+        const cameraOffset = new THREE.Vector3(0, 5, -10);
+        const cameraLerpFactor = 0.1;
+        let cameraFollowMode = true;
+
+        // Control de ratón
+        let isMouseDown = false;
+        let previousMouseX = 0;
+        let previousMouseY = 0;
+
+        // Inicialización
+        init();
+        animate();
+
+        function init() {
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+
+            clock = new THREE.Clock();
+
+            // Escena
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xa0a0a0);
+            scene.fog = new THREE.Fog(0xd0d0d0, 200, 1000);
+
+            // Cámara
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 5, 10);
+
+            // Contenedor para el personaje (SOLUCIÓN CLAVE)
+            characterContainer = new THREE.Group();
+            scene.add(characterContainer);
+
+            // Iluminación
+            setupLights();
+
+            // Suelo
+            setupGround();
+
+            // Entorno HDR
+            setupEnvironment();
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1;
+            container.appendChild(renderer.domElement);
+
+            // Stats
+            stats = new Stats();
+            container.appendChild(stats.dom);
+
+            // Controles
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.enabled = false;
+
+            // Cargar personaje y objetos
+            loadCharacter();
+            addPhysicsObjects();
+
+            // Event listeners
+            setupEventListeners();
+        }
+
+        function setupLights() {
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
+            hemiLight.position.set(0, 200, 0);
+            scene.add(hemiLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+            dirLight.position.set(0, 200, 100);
+            dirLight.castShadow = true;
+            dirLight.shadow.camera.top = 180;
+            dirLight.shadow.camera.bottom = -100;
+            dirLight.shadow.camera.left = -120;
+            dirLight.shadow.camera.right = 120;
+            scene.add(dirLight);
+
+            const pointLight1 = new THREE.PointLight(0xffaa00, 1, 200);
+            pointLight1.position.set(100, 100, 100);
+            scene.add(pointLight1);
+
+            const pointLight2 = new THREE.PointLight(0x00aaff, 1, 200);
+            pointLight2.position.set(-100, 100, -100);
+            scene.add(pointLight2);
+        }
+
+        function setupGround() {
+            const textureLoader = new THREE.TextureLoader();
+            const groundTexture = textureLoader.load('https://threejs.org/examples/textures/terrain/grasslight-big.jpg');
+            groundTexture.wrapS = groundTexture.wrapT = THREE.RepeatWrapping;
+            groundTexture.repeat.set(25, 25);
+            groundTexture.anisotropy = 16;
+
+            const groundMaterial = new THREE.MeshStandardMaterial({ 
+                map: groundTexture,
+                roughness: 0.8,
+                metalness: 0.2
+            });
+            
+            const ground = new THREE.Mesh(
+                new THREE.PlaneGeometry(2000, 2000), 
+                groundMaterial
+            );
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            scene.add(ground);
+        }
+
+        function setupEnvironment() {
+            const rgbeLoader = new RGBELoader();
+            rgbeLoader.load('https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/industrial_sunset_2k.hdr', function (texture) {
+                texture.mapping = THREE.EquirectangularReflectionMapping;
+                scene.environment = texture;
+                scene.background = texture;
+            });
+        }
+
+        function setupEventListeners() {
+            window.addEventListener('resize', onWindowResize);
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+            document.addEventListener('mousedown', onMouseDown);
+            document.addEventListener('mouseup', onMouseUp);
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('contextmenu', (e) => e.preventDefault());
+        }
+
+        function loadCharacter() {
+            const loader = new FBXLoader();
+            
+            loader.load('models/fbx/Great Sword Idle.fbx', (fbx) => {
+                character = fbx;
+                character.scale.set(0.1, 0.1, 0.1);
+                character.traverse(function (child) {
+                    if (child.isMesh) {
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                        // SOLUCIÓN CLAVE: Desactivar la matriz automática
+                        child.matrixAutoUpdate = false;
+                    }
+                });
+                
+                // Añadir el modelo al contenedor
+                characterContainer.add(character);
+                character.position.set(0, 0, 0); // Resetear posición relativa
+
+                mixer = new THREE.AnimationMixer(character);
+                
+                // Cargar animaciones
+                loadAnimation('idle', 'models/fbx/Great Sword Idle.fbx');
+                loadAnimation('walk', 'models/fbx/Walking.fbx');
+                loadAnimation('run', 'models/fbx/Great Sword Run.fbx');
+                loadAnimation('jump', 'models/fbx/Jumping.fbx');
+                loadAnimation('dance', 'models/fbx/Macarena Dance.fbx');
+                loadAnimation('attack', 'models/fbx/Standing Melee Punch.fbx');
+                
+                // Iniciar animación idle
+                setTimeout(() => {
+                    if (actions.idle) {
+                        actions.idle.play();
+                        activeAction = actions.idle;
+                    }
+                }, 500);
+            });
+        }
+
+        function loadAnimation(name, path) {
+            const loader = new FBXLoader();
+            loader.load(path, (fbx) => {
+                if (fbx.animations.length > 0) {
+                    actions[name] = mixer.clipAction(fbx.animations[0]);
+                    actions[name].clampWhenFinished = true;
+                    actions[name].loop = (name === 'idle' || name === 'walk' || name === 'run') ? 
+                        THREE.LoopRepeat : THREE.LoopOnce;
+                    console.log(`Animación ${name} cargada`);
+                }
+            });
+        }
+
+        function addPhysicsObjects() {
+            const materials = [
+                new THREE.MeshStandardMaterial({ color: 0xff0000 }),
+                new THREE.MeshStandardMaterial({ color: 0x00ff00 }),
+                new THREE.MeshStandardMaterial({ color: 0x0000ff }),
+                new THREE.MeshStandardMaterial({ color: 0xffff00 }),
+                new THREE.MeshStandardMaterial({ color: 0xff00ff })
+            ];
+
+            // Objetos más grandes y alejados
+            const objectSize = 5;
+            const objectDistance = 20;
+
+            // Box
+            const boxGeometry = new THREE.BoxGeometry(objectSize, objectSize, objectSize);
+            const box = new THREE.Mesh(boxGeometry, materials[0]);
+            box.position.set(-objectDistance, objectSize/2, 0);
+            box.castShadow = true;
+            box.receiveShadow = true;
+            scene.add(box);
+            objects.push(box);
+
+            // Sphere
+            const sphereGeometry = new THREE.SphereGeometry(objectSize/2, 32, 32);
+            const sphere = new THREE.Mesh(sphereGeometry, materials[1]);
+            sphere.position.set(objectDistance, objectSize/2, 0);
+            sphere.castShadow = true;
+            sphere.receiveShadow = true;
+            scene.add(sphere);
+            objects.push(sphere);
+
+            // Cylinder
+            const cylinderGeometry = new THREE.CylinderGeometry(objectSize/2, objectSize/2, objectSize, 32);
+            const cylinder = new THREE.Mesh(cylinderGeometry, materials[2]);
+            cylinder.position.set(0, objectSize/2, objectDistance);
+            cylinder.castShadow = true;
+            cylinder.receiveShadow = true;
+            scene.add(cylinder);
+            objects.push(cylinder);
+
+            // Cone
+            const coneGeometry = new THREE.ConeGeometry(objectSize/2, objectSize, 32);
+            const cone = new THREE.Mesh(coneGeometry, materials[3]);
+            cone.position.set(0, objectSize/2, -objectDistance);
+            cone.castShadow = true;
+            cone.receiveShadow = true;
+            scene.add(cone);
+            objects.push(cone);
+
+            // Torus
+            const torusGeometry = new THREE.TorusGeometry(objectSize/2, objectSize/4, 16, 32);
+            const torus = new THREE.Mesh(torusGeometry, materials[4]);
+            torus.position.set(-objectDistance, objectSize/2, objectDistance);
+            torus.castShadow = true;
+            torus.receiveShadow = true;
+            scene.add(torus);
+            objects.push(torus);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function onKeyDown(event) {
+            switch (event.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyD': moveRight = true; break;
+                case 'KeyQ': 
+                    running = true;
+                    if (moveForward || moveBackward || moveLeft || moveRight) {
+                        switchAction('run');
+                    }
+                    break;
+                case 'Space': 
+                    if (canJump) {
+                        velocity.y = jumpSpeed;
+                        canJump = false;
+                        switchAction('jump');
+                    }
+                    break;
+                case 'KeyB': 
+                    switchAction('dance'); 
+                    break;
+                case 'KeyC': 
+                    cameraFollowMode = !cameraFollowMode;
+                    controls.enabled = !cameraFollowMode;
+                    break;
+                case 'KeyE': 
+                    switchAction('attack'); 
+                    break;
+            }
+        }
+
+        function onKeyUp(event) {
+            switch (event.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyD': moveRight = false; break;
+                case 'KeyQ': 
+                    running = false;
+                    if (moveForward || moveBackward || moveLeft || moveRight) {
+                        switchAction('walk');
+                    } else {
+                        switchAction('idle');
+                    }
+                    break;
+            }
+        }
+
+        function onMouseDown(event) {
+            isMouseDown = true;
+            previousMouseX = event.clientX;
+            previousMouseY = event.clientY;
+
+            if (event.button === 0) {
+                switchAction('attack');
+            }
+        }
+
+        function onMouseUp() {
+            isMouseDown = false;
+        }
+
+        function onMouseMove(event) {
+            if (!isMouseDown || !controls.enabled) return;
+            
+            const deltaX = event.clientX - previousMouseX;
+            const deltaY = event.clientY - previousMouseY;
+            
+            controls.rotateLeft(-2 * Math.PI * deltaX / renderer.domElement.clientWidth);
+            controls.rotateUp(-2 * Math.PI * deltaY / renderer.domElement.height);
+            
+            previousMouseX = event.clientX;
+            previousMouseY = event.clientY;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const delta = clock.getDelta();
+
+            // Actualizar animaciones
+            if (mixer) mixer.update(delta);
+
+            // Actualizar movimiento
+            updateMovement(delta);
+
+            // Actualizar cámara
+            updateCamera(delta);
+
+            // Actualizar controles y renderizar
+            if (controls.enabled) controls.update();
+            renderer.render(scene, camera);
+            stats.update();
+        }
+
+        function updateMovement(delta) {
+            if (!characterContainer) return;
+
+            // Gravedad
+            velocity.y -= gravity * delta;
+
+            // Dirección del movimiento
+            direction.z = Number(moveForward) - Number(moveBackward);
+            direction.x = Number(moveRight) - Number(moveLeft);
+            direction.normalize();
+
+            // Calcular velocidad deseada
+            const targetVelocity = new THREE.Vector3();
+            if (direction.length() > 0.1) {
+                const speed = running ? runSpeed : walkSpeed;
+                targetVelocity.copy(direction).multiplyScalar(speed);
+            }
+
+            // Aplicar aceleración y desaceleración suave
+            velocity.x = THREE.MathUtils.lerp(velocity.x, targetVelocity.x, dampingFactor);
+            velocity.z = THREE.MathUtils.lerp(velocity.z, targetVelocity.z, dampingFactor);
+
+            // ACTUALIZAR POSICIÓN DEL CONTENEDOR (no del modelo directamente)
+            characterContainer.position.x += velocity.x * delta;
+            characterContainer.position.z += velocity.z * delta;
+            characterContainer.position.y += velocity.y * delta;
+
+            // Colisión con el suelo
+            if (characterContainer.position.y < 0) {
+                velocity.y = 0;
+                characterContainer.position.y = 0;
+                canJump = true;
+            }
+
+            // Rotación del contenedor para mirar en dirección del movimiento
+            if (direction.length() > 0.1) {
+                const targetAngle = Math.atan2(direction.x, direction.z);
+                characterContainer.rotation.y = targetAngle;
+            }
+
+            // Control de animaciones
+            if (direction.length() > 0.1) {
+                if (running) {
+                    switchAction('run');
+                } else {
+                    switchAction('walk');
+                }
+            } else if (velocity.y === 0 && activeAction !== actions.jump && 
+                      activeAction !== actions.dance && activeAction !== actions.attack) {
+                switchAction('idle');
+            }
+
+            // Colisión con objetos
+            const charRadius = 1.5;
+            const charPos = characterContainer.position;
+            
+            for (const obj of objects) {
+                const objPos = obj.position;
+                const distance = charPos.distanceTo(objPos);
+                const minDistance = charRadius + (obj.geometry.boundingSphere?.radius || 2.5);
+                
+                if (distance < minDistance) {
+                    const collisionNormal = new THREE.Vector3().subVectors(charPos, objPos).normalize();
+                    const overlap = minDistance - distance;
+                    
+                    characterContainer.position.add(collisionNormal.multiplyScalar(overlap * 0.5));
+                    
+                    const dot = velocity.dot(collisionNormal);
+                    if (dot < 0) {
+                        velocity.add(collisionNormal.multiplyScalar(-dot * 1.5));
+                    }
+                }
+            }
+        }
+
+        function switchAction(name) {
+            if (!actions[name] || (activeAction && activeAction === actions[name])) return;
+            
+            if (activeAction) {
+                activeAction.fadeOut(0.2);
+            }
+            
+            activeAction = actions[name];
+            activeAction.reset();
+            activeAction.fadeIn(0.2);
+            activeAction.play();
+        }
+
+        function updateCamera(delta) {
+            if (!characterContainer || !cameraFollowMode) return;
+
+            const offset = cameraOffset.clone();
+            if (running) offset.z *= 1.5;
+            
+            // Calcular posición objetivo de la cámara basada en el contenedor
+            cameraTargetPosition.copy(characterContainer.position).add(offset);
+            
+            // Suavizar movimiento de la cámara
+            cameraCurrentPosition.lerp(cameraTargetPosition, cameraLerpFactor);
+            camera.position.copy(cameraCurrentPosition);
+            
+            // Hacer que la cámara mire al contenedor del personaje
+            const lookAtPosition = characterContainer.position.clone();
+            lookAtPosition.y += 2;
+            camera.lookAt(lookAtPosition);
+        }
+    </script>
+
+    <div id="footer">
+        <h1>Escena 3D: Control de Personaje con Three.js</h1>
+        <div>Nombres: Ricardo de Jesús Serrano Cortés, Francisco Emmanuel Luna Hidalgo, Jesús Gabriel Amador Ramírez</div>
+        <div>Números de control: 22200768, 22200747, 22200710</div>
+        <div id="controls">
+            Teclas: W,A,S,D - Movimiento | Q - Correr | Espacio - Saltar | 
+            B - Bailar | E - Atacar | C - Cambiar cámara | 
+            Click derecho + arrastrar - Rotar cámara
+        </div>
+    </div>
+</body>
+</html>
